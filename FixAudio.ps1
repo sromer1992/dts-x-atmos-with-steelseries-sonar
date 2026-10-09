@@ -11,6 +11,7 @@
 
 # -- CONFIGURATION --
 $PlaybackDeviceName   = "CABLE Input"
+$ListenSourceName     = "CABLE Output"                        # Bridge source: CABLE Output -> Sonar Gaming (checked at the end)
 $SetCommunications    = $true                                 # Also set CABLE as the default comms device (routes Discord etc. through DTS/Atmos)
 $SonarProcessName     = "SteelSeriesGG"
 $MaxWaitSeconds       = 120
@@ -222,6 +223,69 @@ function Start-SpatialApp {
 }
 
 # ============================================================================
+# FINAL CHECKS
+# Verifies the end state and returns $true only if every CRITICAL check passed.
+# ============================================================================
+function Invoke-FinalChecks {
+    Write-Log "------------------------------------------"
+    Write-Log "Running final checks..."
+
+    $pass = 0
+    $fail = 0
+
+    # [CRITICAL] Default playback device is CABLE Input
+    $default = Get-AudioDevice -Playback
+    if ($default -and $default.Name -like "*$PlaybackDeviceName*") {
+        Write-Log "  [OK]   Default playback is '$($default.Name)'" "SUCCESS"
+        $pass++
+    }
+    else {
+        $name = if ($default) { $default.Name } else { "(none)" }
+        Write-Log "  [FAIL] Default playback is '$name', expected '$PlaybackDeviceName'" "ERROR"
+        $fail++
+    }
+
+    # [CRITICAL, optional] Default communication device is CABLE Input
+    if ($SetCommunications) {
+        $comms = Get-AudioDevice -PlaybackCommunication
+        if ($comms -and $comms.Name -like "*$PlaybackDeviceName*") {
+            Write-Log "  [OK]   Default comms device is '$($comms.Name)'" "SUCCESS"
+            $pass++
+        }
+        else {
+            $name = if ($comms) { $comms.Name } else { "(none)" }
+            Write-Log "  [FAIL] Default comms device is '$name', expected '$PlaybackDeviceName'" "ERROR"
+            $fail++
+        }
+    }
+
+    # [INFO] Bridge source (CABLE Output) exists as a recording device.
+    # Note: we can confirm the device is present, but Windows stores the
+    # "Listen to this device" routing as a binary blob we can't read reliably,
+    # so this does NOT prove audio is routed into Sonar -- just that the
+    # endpoint the bridge needs is there.
+    $listenSrc = Get-AudioDevice -List |
+                 Where-Object { $_.Type -eq "Recording" -and $_.Name -like "*$ListenSourceName*" }
+    if ($listenSrc) {
+        Write-Log "  [OK]   Bridge source '$ListenSourceName' is present (routing not verifiable here)." "SUCCESS"
+    }
+    else {
+        Write-Log "  [WARN] Bridge source '$ListenSourceName' not found -- audio may not reach Sonar." "WARN"
+    }
+
+    # [INFO] SteelSeries GG is running
+    if (Get-Process -Name $SonarProcessName -ErrorAction SilentlyContinue) {
+        Write-Log "  [OK]   SteelSeries GG is running." "SUCCESS"
+    }
+    else {
+        Write-Log "  [WARN] SteelSeries GG is not running -- Sonar won't be processing audio." "WARN"
+    }
+
+    Write-Log "Checks complete: $pass passed, $fail failed (critical)."
+    return ($fail -eq 0)
+}
+
+# ============================================================================
 # MAIN
 # ============================================================================
 function Main {
@@ -280,18 +344,19 @@ function Main {
         }
     }
 
+    $allGood = Invoke-FinalChecks
+
     Write-Log "=========================================="
-    $finalDefault = Get-AudioDevice -Playback
-    if ($finalDefault.Name -like "*$PlaybackDeviceName*") {
-        Write-Log "FixAudio completed. Default: '$($finalDefault.Name)'" "SUCCESS"
+    if ($allGood) {
+        Write-Log "FixAudio completed successfully -- everything checks out." "SUCCESS"
     }
     else {
-        Write-Log "FixAudio completed but default is '$($finalDefault.Name)'." "WARN"
+        Write-Log "FixAudio completed WITH PROBLEMS -- see the [FAIL] lines above." "ERROR"
     }
     Write-Log "=========================================="
 
     Start-Sleep -Seconds 2
-    [Environment]::Exit(0)
+    if ($allGood) { [Environment]::Exit(0) } else { [Environment]::Exit(1) }
 }
 
 Main
