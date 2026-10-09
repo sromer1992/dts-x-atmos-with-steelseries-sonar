@@ -1,15 +1,17 @@
 # ============================================================================
-# FixAudio.ps1 - SteelSeries Sonar + VB-CABLE + DTS Headphone:X Fix
+# FixAudio.ps1 - SteelSeries Sonar + VB-CABLE + DTS/Atmos Fix
 # ============================================================================
 # Sets CABLE Input as default playback/comms device on login, retries if Sonar
-# steals the default, and launches DTS Sound Unbound to re-assert spatial sound.
+# steals the default, and launches the spatial-sound app (DTS Sound Unbound or
+# Dolby Access) to re-assert spatial sound on the endpoint.
 #
 # Usage: Run via Task Scheduler at logon with highest privileges
-#   Action:  powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Users\Sean\Documents\FixAudio.ps1"
+#   Action:  powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "<path to this script>"
 # ============================================================================
 
 # -- CONFIGURATION --
 $PlaybackDeviceName   = "CABLE Input"
+$SetCommunications    = $true                                 # Also set CABLE as the default comms device (routes Discord etc. through DTS/Atmos)
 $SonarProcessName     = "SteelSeriesGG"
 $MaxWaitSeconds       = 120
 $PollIntervalSeconds  = 3
@@ -19,9 +21,9 @@ $RetryCount           = 6                                      # 6 x 20s = watch
 $LogFile              = "$env:USERPROFILE\FixAudio.log"
 $LogMaxKB             = 256                                    # Trim log at startup if larger than this
 
-# DTS Sound Unbound launch (re-asserts spatial sound on the default endpoint)
-$LaunchDTS            = $true
-$DTSAppIdFallback     = "DTSInc.DTSSoundUnbound_t5j2fzbtdg37r!App"
+# Spatial-sound app launch (re-asserts spatial sound on the default endpoint).
+# Works with DTS Sound Unbound or Dolby Access -- whichever is installed.
+$LaunchSpatialApp     = $true
 
 # ============================================================================
 # LOGGING
@@ -141,12 +143,14 @@ function Set-DefaultDevice {
         return $false
     }
 
-    try {
-        Set-AudioDevice -Index $target.Index -CommunicationOnly | Out-Null
-        Write-Log "Set as Default Communication Device." "SUCCESS"
-    }
-    catch {
-        Write-Log "Failed to set default comms device: $_" "ERROR"
+    if ($SetCommunications) {
+        try {
+            Set-AudioDevice -Index $target.Index -CommunicationOnly | Out-Null
+            Write-Log "Set as Default Communication Device." "SUCCESS"
+        }
+        catch {
+            Write-Log "Failed to set default comms device: $_" "ERROR"
+        }
     }
 
     Start-Sleep -Seconds 1
@@ -161,55 +165,59 @@ function Set-DefaultDevice {
 }
 
 # ============================================================================
-# LAUNCH DTS SOUND UNBOUND
+# LAUNCH SPATIAL-SOUND APP (DTS Sound Unbound or Dolby Access)
 # ============================================================================
-function Start-DTSSoundUnbound {
-    if (-not $LaunchDTS) { return }
+function Start-SpatialApp {
+    if (-not $LaunchSpatialApp) { return }
 
-    Write-Log "Launching DTS Sound Unbound to re-assert spatial sound..."
+    # Find whichever spatial-sound app is installed. Each entry: friendly name,
+    # package-match pattern, and the running-process name to detect/close.
+    $candidates = @(
+        @{ Label = "DTS Sound Unbound"; PkgLike = "*DTSSoundUnbound*"; Proc = "DTSSoundUnbound*" },
+        @{ Label = "Dolby Access";      PkgLike = "*DolbyAccess*";     Proc = "DolbyAccess*"     }
+    )
+
+    $app = $null
+    foreach ($c in $candidates) {
+        $pkg = Get-AppxPackage -Name $c.PkgLike -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pkg) {
+            $app = @{ Label = $c.Label; AppId = "$($pkg.PackageFamilyName)!App"; Proc = $c.Proc }
+            break
+        }
+    }
+
+    if (-not $app) {
+        Write-Log "No spatial-sound app (DTS Sound Unbound / Dolby Access) found. Skipping." "WARN"
+        return
+    }
+
+    Write-Log "Launching $($app.Label) to re-assert spatial sound..."
 
     try {
-        $dtsProc = Get-Process -Name "DTSSoundUnbound*" -ErrorAction SilentlyContinue
-        if ($dtsProc) {
-            Write-Log "DTS Sound Unbound is already running (PID: $($dtsProc.Id))." "SUCCESS"
+        $existing = Get-Process -Name $app.Proc -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Log "$($app.Label) is already running (PID: $($existing.Id))." "SUCCESS"
             return
         }
 
-        $appId = $null
-        $dtsPackage = Get-AppxPackage -Name "*DTSSoundUnbound*" -ErrorAction SilentlyContinue
-        if (-not $dtsPackage) {
-            $dtsPackage = Get-AppxPackage -Name "*DTS*" -ErrorAction SilentlyContinue |
-                          Where-Object { $_.Name -like "*Sound*" -or $_.Name -like "*Unbound*" } |
-                          Select-Object -First 1
-        }
-
-        if ($dtsPackage) {
-            $appId = "$($dtsPackage.PackageFamilyName)!App"
-            Write-Log "Found DTS package: $($dtsPackage.Name)"
-        }
-        else {
-            Write-Log "DTS package not found via Get-AppxPackage. Using fallback App ID." "WARN"
-            $appId = $DTSAppIdFallback
-        }
-
-        Start-Process "shell:AppsFolder\$appId" -ErrorAction Stop
-        Write-Log "DTS Sound Unbound launched." "SUCCESS"
+        Start-Process "shell:AppsFolder\$($app.AppId)" -ErrorAction Stop
+        Write-Log "$($app.Label) launched." "SUCCESS"
 
         Start-Sleep -Seconds 5
 
-        $dtsProc = Get-Process -Name "DTSSoundUnbound*" -ErrorAction SilentlyContinue
-        if ($dtsProc) {
-            $dtsProc | ForEach-Object { $_.CloseMainWindow() | Out-Null }
+        $proc = Get-Process -Name $app.Proc -ErrorAction SilentlyContinue
+        if ($proc) {
+            $proc | ForEach-Object { $_.CloseMainWindow() | Out-Null }
             Start-Sleep -Seconds 2
-            $dtsProc = Get-Process -Name "DTSSoundUnbound*" -ErrorAction SilentlyContinue
-            if ($dtsProc) {
-                $dtsProc | Stop-Process -Force -ErrorAction SilentlyContinue
+            $proc = Get-Process -Name $app.Proc -ErrorAction SilentlyContinue
+            if ($proc) {
+                $proc | Stop-Process -Force -ErrorAction SilentlyContinue
             }
-            Write-Log "DTS Sound Unbound closed." "SUCCESS"
+            Write-Log "$($app.Label) closed." "SUCCESS"
         }
     }
     catch {
-        Write-Log "Failed to launch DTS Sound Unbound: $_" "WARN"
+        Write-Log "Failed to launch $($app.Label): $_" "WARN"
     }
 }
 
@@ -240,6 +248,17 @@ function Main {
 
     Wait-ForDevice -DeviceName $PlaybackDeviceName
 
+    # Bail early if the target device genuinely isn't present -- no point
+    # running the 2-minute watch loop reclaiming a device that doesn't exist.
+    $exists = Get-AudioDevice -List |
+              Where-Object { $_.Type -eq "Playback" -and $_.Name -like "*$PlaybackDeviceName*" }
+    if (-not $exists) {
+        Write-Log "'$PlaybackDeviceName' is not installed on this PC. Is VB-Cable installed?" "ERROR"
+        Write-Log "Nothing to do. Exiting." "ERROR"
+        Start-Sleep -Seconds 5
+        [Environment]::Exit(1)
+    }
+
     Set-DefaultDevice -DeviceName $PlaybackDeviceName | Out-Null
 
     # Watch the default for a while after login -- Sonar can steal it late
@@ -257,7 +276,7 @@ function Main {
         }
     }
 
-    Start-DTSSoundUnbound
+    Start-SpatialApp
 
     Write-Log "=========================================="
     $finalDefault = Get-AudioDevice -Playback
