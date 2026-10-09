@@ -261,7 +261,11 @@ function Main {
 
     Set-DefaultDevice -DeviceName $PlaybackDeviceName | Out-Null
 
-    # Watch the default for a while after login -- Sonar can steal it late
+    # Re-assert spatial sound right away so it's ready fast -- the endpoint
+    # already exists and is set by now, so this doesn't need the watch loop.
+    Start-SpatialApp
+
+    # Then keep watching the default for a while -- Sonar can steal it late
     Write-Log "Watching default device for $($RetryCount * $RetryDelaySeconds)s in case Sonar changes it..."
     for ($i = 1; $i -le $RetryCount; $i++) {
         Start-Sleep -Seconds $RetryDelaySeconds
@@ -275,8 +279,6 @@ function Main {
             Set-DefaultDevice -DeviceName $PlaybackDeviceName | Out-Null
         }
     }
-
-    Start-SpatialApp
 
     Write-Log "=========================================="
     $finalDefault = Get-AudioDevice -Playback
