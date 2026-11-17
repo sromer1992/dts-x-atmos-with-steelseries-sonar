@@ -58,3 +58,5 @@ finally {
     $script:ui.Footer.Dispose(); $script:ui.Progress.Dispose(); $script:ui.ActionButtons[0].Dispose()
 }
 Write-Host '3 UI/worker checks passed.'
+# The identity check deliberately leaves a worker exit code of 1; CI ends a step with that code.
+exit 0
