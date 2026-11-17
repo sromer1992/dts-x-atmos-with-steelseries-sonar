@@ -1,0 +1,30 @@
+name: Windows checks and package
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run regressions under Windows PowerShell 5.1
+        run: ./tests/Regression.Tests.ps1
+      - name: Check dashboard worker protocol
+        run: ./tests/UI.Worker.Tests.ps1
+      - name: Build versioned ZIP and checksums
+        run: ./Build-Release.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: FixAudio-Windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
